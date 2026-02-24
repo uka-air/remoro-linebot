@@ -5,9 +5,9 @@ const fs = require("fs");
 const path = require("path");
 const { google } = require("googleapis");
 
-const SCOPES = ["https://www.googleapis.com/auth/drive"];
 const CREDENTIALS_PATH = process.env.OAUTH_CLIENT_SECRET_PATH || "./credentials.json";
 const TOKEN_PATH = process.env.OAUTH_TOKEN_PATH || "./token.json";
+const { getAuthClient } = require("./auth");
 
 // ---------- OAuth helpers ----------
 function loadCredentials() {
@@ -21,55 +21,8 @@ function loadCredentials() {
   return creds;
 }
 
-async function authorize() {
-  // ถ้ามี token.json แล้ว ใช้เลย
-  if (fs.existsSync(TOKEN_PATH)) {
-    const creds = loadCredentials();
-    const oAuth2Client = new google.auth.OAuth2(
-      creds.client_id,
-      creds.client_secret,
-      (creds.redirect_uris && creds.redirect_uris[0]) || "http://localhost"
-    );
-
-    const token = JSON.parse(fs.readFileSync(TOKEN_PATH, "utf8"));
-    oAuth2Client.setCredentials(token);
-    return oAuth2Client;
-  }
-
-  // ถ้ายังไม่มี token.json ให้ทำ flow แบบ "paste code" (ง่ายและชัวร์บน local)
-  const creds = loadCredentials();
-  const oAuth2Client = new google.auth.OAuth2(
-    creds.client_id,
-    creds.client_secret,
-    (creds.redirect_uris && creds.redirect_uris[0]) || "http://localhost"
-  );
-
-  const authUrl = oAuth2Client.generateAuthUrl({
-    access_type: "offline",
-    scope: SCOPES,
-    prompt: "consent",
-  });
-
-  console.log("\nAuthorize this app by visiting this url:\n", authUrl, "\n");
-  console.log("After approval, copy the code from the browser and paste it here.");
-
-  // อ่าน code จาก stdin
-  const readline = require("readline");
-  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-  const code = await new Promise((resolve) => rl.question("Enter code: ", resolve));
-  rl.close();
-
-  const { tokens } = await oAuth2Client.getToken(code.trim());
-  oAuth2Client.setCredentials(tokens);
-
-  fs.writeFileSync(TOKEN_PATH, JSON.stringify(tokens, null, 2));
-  console.log("Token stored to:", TOKEN_PATH);
-
-  return oAuth2Client;
-}
-
 async function getDriveClient() {
-  const auth = await authorize();
+  const auth = await getAuthClient();
   return google.drive({ version: "v3", auth });
 }
 
@@ -170,52 +123,82 @@ function withDupSuffix(fileName, n) {
   return `${fileName.slice(0, idx)}_dup${n}.pdf`;
 }
 
+function monthFromDate(d) {
+  const yyyy = d.getFullYear();
+  const mm = d.getMonth() + 1;
+  return monthFolderName(yyyy, mm); // YYYY_MM
+}
+
+function parseMonthFolder(fileName, receivedAt) {
+  if (!/\.pdf$/i.test(fileName)) return null;
+
+  // IV/RV: IV6902-0001.pdf, RV6902-0001.pdf
+  const m1 = /^(IV|RV)(\d{2})(\d{2})-\d{4}\.pdf$/i.exec(fileName);
+  if (m1) {
+    const yy = Number(m1[2]);
+    const mm = Number(m1[3]);
+    const yyyy = yyToYyyy(yy);
+    return monthFolderName(yyyy, mm);
+  }
+
+  // WHT ที่มีเดือนปี:
+  // - WHT-ชื่อบริษัท 02-2026.pdf
+  // - WHT ชื่อบริษัท 02-2026 V2.pdf
+  const m2 = /^WHT(?:-|\s+).+?\s+(\d{2})-(\d{4})(?:\s*V\d+)?\.pdf$/i.exec(fileName);
+  if (m2) {
+    const mm = Number(m2[1]);
+    const yyyy = Number(m2[2]);
+    return monthFolderName(yyyy, mm);
+  }
+
+  // ✅ WHT ที่ไม่มีเดือนปี: ใช้เดือนปีตอนรับไฟล์
+  if (/^WHT(?:-|\s+)/i.test(fileName)) {
+    return monthFromDate(receivedAt);
+  }
+
+  return null;
+}
+
+
 // ---------- Main upload ----------
-async function uploadFileToDrive(localPath, fileName) {
+async function uploadFileToDrive(localPath, fileName, receivedAt = new Date()) {
+
   const drive = await getDriveClient();
 
   const rootId = process.env.DRIVE_ROOT_FOLDER_ID;
   if (!rootId) throw new Error("Missing DRIVE_ROOT_FOLDER_ID in .env");
 
-  // debug: ให้เห็นว่า request มี identity แล้ว
-  const rootInfo = await drive.files.get({
-    fileId: rootId,
-    fields: "id,name,driveId",
-    supportsAllDrives: true,
-  });
-  console.log("ROOT_INFO:", rootInfo.data);
-
-  const info = classifyFile(fileName);
-
-  // โฟลเดอร์เดือน (YYYY_MM)
-  const monthId =
-    info.kind === "UNKNOWN"
-      ? await getOrCreateFolder(drive, rootId, "Unsorted")
-      : await getOrCreateFolder(drive, rootId, monthFolderName(info.yyyy, info.mm));
-
-  // โฟลเดอร์ย่อยในเดือน
-  let targetId = monthId;
-  if (info.kind === "IV" || info.kind === "RV") {
-    targetId = await getOrCreateFolder(drive, monthId, info.kind);
-  } else if (info.kind === "WHT") {
-    const whtRoot = await getOrCreateFolder(drive, monthId, "WHT");
-    targetId = await getOrCreateFolder(drive, whtRoot, info.company);
+  // เอาเฉพาะ PDF
+  if (!/\.pdf$/i.test(fileName)) {
+    console.log("skip non-pdf:", fileName);
+    return null;
   }
 
-  // กันชื่อซ้ำ
+  // 1) หาโฟลเดอร์เดือน
+  const monthName = parseMonthFolder(fileName, receivedAt);
+
+  // 2) สร้าง/หาโฟลเดอร์เดือน (ถ้า parse ไม่ได้ให้ลง Unsorted)
+  const monthId = monthName
+    ? await getOrCreateFolder(drive, rootId, monthName)
+    : await getOrCreateFolder(drive, rootId, "Unsorted");
+
+  // 3) สร้าง/หา docs ใต้เดือน
+  const docsId = await getOrCreateFolder(drive, monthId, "docs");
+
+  // 4) กันชื่อซ้ำ
   let finalName = fileName;
-  if (await fileExists(drive, targetId, finalName)) {
+  if (await fileExists(drive, docsId, finalName)) {
     let n = 1;
-    while (await fileExists(drive, targetId, withDupSuffix(fileName, n))) n += 1;
+    while (await fileExists(drive, docsId, withDupSuffix(fileName, n))) n += 1;
     finalName = withDupSuffix(fileName, n);
   }
 
-  // upload
+  // 5) อัปโหลด
   const res = await drive.files.create({
-    requestBody: { name: finalName, parents: [targetId] },
+    requestBody: { name: finalName, parents: [docsId] },
     media: { mimeType: "application/pdf", body: fs.createReadStream(localPath) },
     fields: "id,webViewLink,name",
-    supportsAllDrives: true,
+    supportsAllDrives: true, // มี/ไม่มีได้ แต่ใส่ไว้ไม่เสียหาย
   });
 
   return res.data;

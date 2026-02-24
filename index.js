@@ -43,7 +43,7 @@ app.post("/webhook", line.middleware(config), async (req, res) => {
       console.log("saved local:", savePath);
 
       // 👇 อัปโหลดขึ้น Google Drive
-      const uploaded = await uploadFileToDrive(savePath, msg.fileName);
+      const uploaded = await uploadFileToDrive(savePath, msg.fileName, new Date());
       console.log("uploaded to drive:", uploaded.webViewLink);
 
       // ตอบกลับใน LINE
