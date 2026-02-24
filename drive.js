@@ -26,6 +26,13 @@ async function getDriveClient() {
   return google.drive({ version: "v3", auth });
 }
 
+// กัน create โฟลเดอร์ซ้ำจาก request ที่มาพร้อมกัน
+const folderLocks = new Map();
+
+function sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
 // ---------- Helpers ----------
 function pad2(n) {
   return String(n).padStart(2, "0");
@@ -87,21 +94,50 @@ async function findFolder(drive, parentId, name) {
 }
 
 async function getOrCreateFolder(drive, parentId, name) {
-  const existing = await findFolder(drive, parentId, name);
-  if (existing) return existing.id;
+  const key = `${parentId}::${name}`;
 
-  const created = await drive.files.create({
-    requestBody: {
-      name,
-      mimeType: "application/vnd.google-apps.folder",
-      parents: [parentId],
-    },
-    fields: "id",
-    supportsAllDrives: true,
-  });
+  // ถ้ามีงานสร้างโฟลเดอร์ชื่อนี้อยู่แล้ว ให้รอผลของอันนั้น
+  if (folderLocks.has(key)) return folderLocks.get(key);
 
-  return created.data.id;
+  const task = (async () => {
+    // 1) หาอีกครั้งก่อนสร้าง
+    const existing = await findFolder(drive, parentId, name);
+    if (existing) return existing.id;
+
+    // 2) สร้าง
+    const created = await drive.files.create({
+      requestBody: {
+        name,
+        mimeType: "application/vnd.google-apps.folder",
+        parents: [parentId],
+      },
+      fields: "id",
+      supportsAllDrives: true,
+    });
+
+    const createdId = created.data.id;
+
+    // 3) รอให้ Drive index ทัน แล้วค่อย “ยืนยัน” ว่ามีโฟลเดอร์นี้จริง (กันสร้างซ้ำจาก index delay)
+    //    ถ้าเจอหลายอัน ให้เลือกอันแรก (หรือจะเลือก createdId ก็ได้)
+    for (const waitMs of [150, 300, 600, 1200]) {
+      await sleep(waitMs);
+      const again = await findFolder(drive, parentId, name);
+      if (again) return again.id;
+    }
+
+    // 4) ถ้ายังหาไม่เจอ (rare) คืน id ที่เพิ่งสร้างไปเลย
+    return createdId;
+  })();
+
+  folderLocks.set(key, task);
+
+  try {
+    return await task;
+  } finally {
+    folderLocks.delete(key);
+  }
 }
+
 
 async function fileExists(drive, parentId, name) {
   const safeName = name.replace(/'/g, "\\'");
