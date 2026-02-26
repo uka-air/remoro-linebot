@@ -187,10 +187,20 @@ function parseMonthFolder(fileName, receivedAt) {
     return monthFolderName(yyyy, mm);
   }
 
-  // ✅ WHT ที่ไม่มีเดือนปี: ใช้เดือนปีตอนรับไฟล์
+  // WHT ที่ไม่มีเดือนปี: ใช้เดือนปีตอนรับไฟล์
   if (/^WHT(?:-|\s+)/i.test(fileName)) {
     return monthFromDate(receivedAt);
   }
+
+  return null;
+}
+
+function parseCategoryFolder(fileName) {
+  if (!/\.pdf$/i.test(fileName)) return null;
+
+  if (/^RV/i.test(fileName)) return "RV";
+  if (/^IV/i.test(fileName)) return "IV";
+  if (/^WHT/i.test(fileName)) return "WHT";
 
   return null;
 }
@@ -221,17 +231,23 @@ async function uploadFileToDrive(localPath, fileName, receivedAt = new Date()) {
   // 3) สร้าง/หา docs ใต้เดือน
   const docsId = await getOrCreateFolder(drive, monthId, "docs");
 
+  // 4) แยกไฟล์ตาม prefix ของชื่อไฟล์ (RV/IV/WHT)
+  const categoryName = parseCategoryFolder(fileName);
+  const targetFolderId = categoryName
+    ? await getOrCreateFolder(drive, docsId, categoryName)
+    : docsId;
+
   // 4) กันชื่อซ้ำ
   let finalName = fileName;
-  if (await fileExists(drive, docsId, finalName)) {
+  if (await fileExists(drive, targetFolderId, finalName)) {
     let n = 1;
-    while (await fileExists(drive, docsId, withDupSuffix(fileName, n))) n += 1;
+    while (await fileExists(drive, targetFolderId, withDupSuffix(fileName, n))) n += 1;
     finalName = withDupSuffix(fileName, n);
   }
 
   // 5) อัปโหลด
   const res = await drive.files.create({
-    requestBody: { name: finalName, parents: [docsId] },
+    requestBody: { name: finalName, parents: [targetFolderId] },
     media: { mimeType: "application/pdf", body: fs.createReadStream(localPath) },
     fields: "id,webViewLink,name",
     supportsAllDrives: true, // มี/ไม่มีได้ แต่ใส่ไว้ไม่เสียหาย
