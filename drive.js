@@ -230,7 +230,6 @@ async function uploadFileToDrive(localPath, fileName, receivedAt = new Date(), o
 
   // เลือก subfolder ตามประเภท
   const subFolderName = options.category === "expense" ? "expense" : "docs";
-  const targetFolderId = await getOrCreateFolder(drive, monthId, subFolderName);
 
   // 3) สร้าง/หา docs ใต้เดือน
   const docsId = await getOrCreateFolder(drive, monthId, "docs");
