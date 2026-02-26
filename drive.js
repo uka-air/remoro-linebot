@@ -228,6 +228,10 @@ async function uploadFileToDrive(localPath, fileName, receivedAt = new Date(), o
     ? await getOrCreateFolder(drive, rootId, monthName)
     : await getOrCreateFolder(drive, rootId, "Unsorted");
 
+  // เลือก subfolder ตามประเภท
+  const subFolderName = options.category === "expense" ? "expense" : "docs";
+  const targetFolderId = await getOrCreateFolder(drive, monthId, subFolderName);
+
   // 3) สร้าง/หา docs ใต้เดือน
   const docsId = await getOrCreateFolder(drive, monthId, "docs");
 
@@ -245,12 +249,26 @@ async function uploadFileToDrive(localPath, fileName, receivedAt = new Date(), o
     finalName = withDupSuffix(fileName, n);
   }
 
-  // 5) อัปโหลด
+  const isPdf = /\.pdf$/i.test(fileName);
+  const isImg = /\.(jpg|jpeg|png)$/i.test(fileName);
+
+  if (!isPdf && !isImg) {
+    console.log("skip unsupported:", fileName);
+    return null;
+  }
+
+  const mimeType = isPdf
+  ? "application/pdf"
+  : fileName.toLowerCase().endsWith(".png")
+    ? "image/png"
+    : "image/jpeg";
+
+  // 5) อัปโหลด 
   const res = await drive.files.create({
     requestBody: { name: finalName, parents: [targetFolderId] },
     media: { mimeType: "application/pdf", body: fs.createReadStream(localPath) },
     fields: "id,webViewLink,name",
-    supportsAllDrives: true, // มี/ไม่มีได้ แต่ใส่ไว้ไม่เสียหาย
+    supportsAllDrives: true,
   });
 
   return res.data;
