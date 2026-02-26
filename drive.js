@@ -207,7 +207,7 @@ function parseCategoryFolder(fileName) {
 
 
 // ---------- Main upload ----------
-async function uploadFileToDrive(localPath, fileName, receivedAt = new Date()) {
+async function uploadFileToDrive(localPath, fileName, receivedAt = new Date(), options = {}) {
 
   const drive = await getDriveClient();
 
