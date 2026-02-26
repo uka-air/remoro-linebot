@@ -154,9 +154,10 @@ async function fileExists(drive, parentId, name) {
 }
 
 function withDupSuffix(fileName, n) {
-  const idx = fileName.toLowerCase().lastIndexOf(".pdf");
-  if (idx === -1) return `${fileName}_dup${n}`;
-  return `${fileName.slice(0, idx)}_dup${n}.pdf`;
+  const ext = path.extname(fileName);
+  if (!ext) return `${fileName}_dup${n}`;
+  const baseName = fileName.slice(0, -ext.length);
+  return `${baseName}_dup${n}${ext}`;
 }
 
 function monthFromDate(d) {
@@ -214,31 +215,36 @@ async function uploadFileToDrive(localPath, fileName, receivedAt = new Date(), o
   const rootId = process.env.DRIVE_ROOT_FOLDER_ID;
   if (!rootId) throw new Error("Missing DRIVE_ROOT_FOLDER_ID in .env");
 
-  // เอาเฉพาะ PDF
-  if (!/\.pdf$/i.test(fileName)) {
-    console.log("skip non-pdf:", fileName);
+  const lowerName = fileName.toLowerCase();
+  const isPdf = /\.pdf$/i.test(fileName);
+  const isImg = /\.(jpg|jpeg|png|heic|heif)$/i.test(fileName);
+
+  if (!isPdf && !isImg) {
+    console.log("skip unsupported:", fileName);
     return null;
   }
 
   // 1) หาโฟลเดอร์เดือน
-  const monthName = parseMonthFolder(fileName, receivedAt);
+  const monthName = options.category === "expense"
+    ? monthFromDate(receivedAt)
+    : parseMonthFolder(fileName, receivedAt);
 
   // 2) สร้าง/หาโฟลเดอร์เดือน (ถ้า parse ไม่ได้ให้ลง Unsorted)
   const monthId = monthName
     ? await getOrCreateFolder(drive, rootId, monthName)
     : await getOrCreateFolder(drive, rootId, "Unsorted");
 
-  // เลือก subfolder ตามประเภท
-  const subFolderName = options.category === "expense" ? "expense" : "docs";
-
-  // 3) สร้าง/หา docs ใต้เดือน
-  const docsId = await getOrCreateFolder(drive, monthId, "docs");
-
-  // 4) แยกไฟล์ตาม prefix ของชื่อไฟล์ (RV/IV/WHT)
-  const categoryName = parseCategoryFolder(fileName);
-  const targetFolderId = categoryName
-    ? await getOrCreateFolder(drive, docsId, categoryName)
-    : docsId;
+  // 3) แยกปลายทางตามประเภทงาน
+  let targetFolderId;
+  if (options.category === "expense") {
+    targetFolderId = await getOrCreateFolder(drive, monthId, "expense");
+  } else {
+    const docsId = await getOrCreateFolder(drive, monthId, "docs");
+    const categoryName = parseCategoryFolder(fileName);
+    targetFolderId = categoryName
+      ? await getOrCreateFolder(drive, docsId, categoryName)
+      : docsId;
+  }
 
   // 4) กันชื่อซ้ำ
   let finalName = fileName;
@@ -248,24 +254,20 @@ async function uploadFileToDrive(localPath, fileName, receivedAt = new Date(), o
     finalName = withDupSuffix(fileName, n);
   }
 
-  const isPdf = /\.pdf$/i.test(fileName);
-  const isImg = /\.(jpg|jpeg|png)$/i.test(fileName);
-
-  if (!isPdf && !isImg) {
-    console.log("skip unsupported:", fileName);
-    return null;
-  }
-
   const mimeType = isPdf
-  ? "application/pdf"
-  : fileName.toLowerCase().endsWith(".png")
-    ? "image/png"
-    : "image/jpeg";
+    ? "application/pdf"
+    : lowerName.endsWith(".png")
+      ? "image/png"
+      : lowerName.endsWith(".heic")
+        ? "image/heic"
+        : lowerName.endsWith(".heif")
+          ? "image/heif"
+          : "image/jpeg";
 
   // 5) อัปโหลด 
   const res = await drive.files.create({
     requestBody: { name: finalName, parents: [targetFolderId] },
-    media: { mimeType: "application/pdf", body: fs.createReadStream(localPath) },
+    media: { mimeType, body: fs.createReadStream(localPath) },
     fields: "id,webViewLink,name",
     supportsAllDrives: true,
   });
