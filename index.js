@@ -25,6 +25,13 @@ function makeImageName(receivedAt, messageId, ext) {
   return `${yyyy}-${mm}-${dd}_${hh}${mi}${ss}_${messageId}${ext}`;
 }
 
+function extFromContentType(contentType = "") {
+  if (contentType.includes("heic")) return ".heic";
+  if (contentType.includes("heif")) return ".heif";
+  if (contentType.includes("png")) return ".png";
+  return ".jpg";
+}
+
 app.post("/webhook", line.middleware(config), async (req, res) => {
   try {
     const events = req.body.events || [];
@@ -39,9 +46,12 @@ app.post("/webhook", line.middleware(config), async (req, res) => {
       // ---------- FILE (PDF) ----------
       if (msg.type === "file") {
         const stream = await client.getMessageContent(msg.id);
+        const originalName = msg.fileName || `file_${msg.id}`;
+        const ext = path.extname(originalName).toLowerCase();
+        const isImageFile = [".jpg", ".jpeg", ".png", ".heic", ".heif"].includes(ext);
 
         fs.mkdirSync("downloads", { recursive: true });
-        const savePath = path.join("downloads", msg.fileName);
+        const savePath = path.join("downloads", originalName);
         const ws = fs.createWriteStream(savePath);
 
         await new Promise((resolve, reject) => {
@@ -51,7 +61,12 @@ app.post("/webhook", line.middleware(config), async (req, res) => {
           ws.on("error", reject);
         });
 
-        const uploaded = await uploadFileToDrive(savePath, msg.fileName, receivedAt);
+        const uploaded = await uploadFileToDrive(
+          savePath,
+          originalName,
+          receivedAt,
+          isImageFile ? { category: "expense" } : {}
+        );
         console.log("uploaded:", uploaded?.webViewLink);
 
         continue;
@@ -63,7 +78,7 @@ app.post("/webhook", line.middleware(config), async (req, res) => {
 
         // เดาจาก content-type เพื่อเลือกนามสกุล
         const contentType = stream.headers?.["content-type"] || "";
-        const ext = contentType.includes("png") ? ".png" : ".jpg";
+        const ext = extFromContentType(contentType);
 
         const fileName = makeImageName(receivedAt, msg.id, ext);
 
