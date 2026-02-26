@@ -12,10 +12,6 @@ const config = {
 };
 
 const app = express();
-const path = require("path");
-const fs = require("fs");
-const line = require("@line/bot-sdk");
-const { uploadFileToDrive } = require("./drive");
 
 function pad2(n) { return String(n).padStart(2, "0"); }
 
