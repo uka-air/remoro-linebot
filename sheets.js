@@ -11,6 +11,31 @@ function monthFolderNameFromDate(d) {
   return `${d.getFullYear()}_${pad2(d.getMonth() + 1)}`;
 }
 
+function extractFirstUrl(text = "") {
+  const m = text.match(/https?:\/\/\S+/);
+  return m ? m[0] : null;
+}
+
+function isSheetsApiDisabledError(err) {
+  const message = `${err?.message || ""} ${err?.cause?.message || ""}`;
+  const has403 = Number(err?.code) === 403 || Number(err?.status) === 403;
+  return has403 && /google sheets api has not been used|disabled|sheets.googleapis.com/i.test(message);
+}
+
+function toFriendlySheetsError(err) {
+  if (!isSheetsApiDisabledError(err)) return err;
+
+  const fullMessage = err?.cause?.message || err?.message || "Google Sheets API is disabled.";
+  const enableUrl = extractFirstUrl(fullMessage);
+  const friendly = new Error(
+    `Google Sheets API is disabled for this Google Cloud project.${enableUrl ? ` Enable it here: ${enableUrl}` : ""}`
+  );
+  friendly.code = "SHEETS_API_DISABLED";
+  friendly.enableUrl = enableUrl;
+  friendly.originalMessage = fullMessage;
+  return friendly;
+}
+
 async function getClients() {
   const auth = await getAuthClient();
   return {
@@ -142,49 +167,60 @@ async function getOrCreateMonthlyExpenseSpreadsheet(drive, sheets, rootFolderId,
   return spreadsheetId;
 }
 
-
 async function ensureMonthlyExpenseSheet(receivedAt = new Date()) {
-  const rootId = process.env.DRIVE_ROOT_FOLDER_ID;
-  if (!rootId) throw new Error("Missing DRIVE_ROOT_FOLDER_ID in .env");
+  try {
+    const rootId = process.env.DRIVE_ROOT_FOLDER_ID;
+    if (!rootId) throw new Error("Missing DRIVE_ROOT_FOLDER_ID in .env");
 
-  const { drive, sheets } = await getClients();
-  const spreadsheetId = await getOrCreateMonthlyExpenseSpreadsheet(drive, sheets, rootId, receivedAt);
-  return { spreadsheetId };
+    const { drive, sheets } = await getClients();
+    const spreadsheetId = await getOrCreateMonthlyExpenseSpreadsheet(drive, sheets, rootId, receivedAt);
+    return { spreadsheetId };
+  } catch (err) {
+    throw toFriendlySheetsError(err);
+  }
 }
 
 async function appendExpenseReportRow(receivedAt, uploadedFile, parsedExpense) {
-  const rootId = process.env.DRIVE_ROOT_FOLDER_ID;
-  if (!rootId) throw new Error("Missing DRIVE_ROOT_FOLDER_ID in .env");
+  try {
+    const rootId = process.env.DRIVE_ROOT_FOLDER_ID;
+    if (!rootId) throw new Error("Missing DRIVE_ROOT_FOLDER_ID in .env");
 
-  const { drive, sheets } = await getClients();
-  const spreadsheetId = await getOrCreateMonthlyExpenseSpreadsheet(drive, sheets, rootId, receivedAt);
+    const { drive, sheets } = await getClients();
+    const spreadsheetId = await getOrCreateMonthlyExpenseSpreadsheet(drive, sheets, rootId, receivedAt);
 
-  const data = parsedExpense?.data || {};
+    const data = parsedExpense?.data || {};
 
-  await sheets.spreadsheets.values.append({
-    spreadsheetId,
-    range: "expense_report!A:L",
-    valueInputOption: "USER_ENTERED",
-    insertDataOption: "INSERT_ROWS",
-    requestBody: {
-      values: [[
-        receivedAt.toISOString(),
-        uploadedFile?.name || "",
-        uploadedFile?.webViewLink || "",
-        data.documentType ?? null,
-        data.merchant ?? null,
-        data.date ?? null,
-        data.totalAmount ?? null,
-        data.currency ?? null,
-        data.taxAmount ?? null,
-        data.summary ?? null,
-        parsedExpense?.status || "unknown",
-        parsedExpense?.reason || "",
-      ]],
-    },
-  });
+    await sheets.spreadsheets.values.append({
+      spreadsheetId,
+      range: "expense_report!A:L",
+      valueInputOption: "USER_ENTERED",
+      insertDataOption: "INSERT_ROWS",
+      requestBody: {
+        values: [[
+          receivedAt.toISOString(),
+          uploadedFile?.name || "",
+          uploadedFile?.webViewLink || "",
+          data.documentType ?? null,
+          data.merchant ?? null,
+          data.date ?? null,
+          data.totalAmount ?? null,
+          data.currency ?? null,
+          data.taxAmount ?? null,
+          data.summary ?? null,
+          parsedExpense?.status || "unknown",
+          parsedExpense?.reason || "",
+        ]],
+      },
+    });
 
-  return { spreadsheetId };
+    return { spreadsheetId };
+  } catch (err) {
+    throw toFriendlySheetsError(err);
+  }
 }
 
-module.exports = { appendExpenseReportRow, ensureMonthlyExpenseSheet };
+module.exports = {
+  appendExpenseReportRow,
+  ensureMonthlyExpenseSheet,
+  isSheetsApiDisabledError,
+};

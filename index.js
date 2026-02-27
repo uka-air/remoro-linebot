@@ -6,7 +6,11 @@ const path = require("path");
 
 const { uploadFileToDrive } = require("./drive"); // 👈 สำคัญ
 const { extractExpenseFromImage } = require("./image-reader");
-const { appendExpenseReportRow, ensureMonthlyExpenseSheet } = require("./sheets");
+const {
+  appendExpenseReportRow,
+  ensureMonthlyExpenseSheet,
+  isSheetsApiDisabledError,
+} = require("./sheets");
 
 const config = {
   channelSecret: process.env.CHANNEL_SECRET,
@@ -43,6 +47,14 @@ function isCreateExpenseSheetCommand(text = "") {
   ].includes(normalized);
 }
 
+
+function buildSheetsSetupMessage(err) {
+  const base = "Google Sheets API is not enabled yet for this project.";
+  const url = err?.enableUrl;
+  if (url) return `${base} Enable it here, wait a few minutes, then try again: ${url}`;
+  return `${base} Please enable Sheets API in Google Cloud Console, wait a few minutes, then try again.`;
+}
+
 app.post("/webhook", line.middleware(config), async (req, res) => {
   try {
     const events = req.body.events || [];
@@ -56,11 +68,23 @@ app.post("/webhook", line.middleware(config), async (req, res) => {
 
       // ---------- TEXT (create monthly expense sheet) ----------
       if (msg.type === "text" && isCreateExpenseSheetCommand(msg.text || "")) {
-        const report = await ensureMonthlyExpenseSheet(receivedAt);
-        await client.replyMessage(event.replyToken, {
-          type: "text",
-          text: `Done. Expense report sheet is ready for ${receivedAt.getFullYear()}_${pad2(receivedAt.getMonth() + 1)} (sheet id: ${report.spreadsheetId})`,
-        });
+        try {
+          const report = await ensureMonthlyExpenseSheet(receivedAt);
+          await client.replyMessage(event.replyToken, {
+            type: "text",
+            text: `Done. Expense report sheet is ready for ${receivedAt.getFullYear()}_${pad2(receivedAt.getMonth() + 1)} (sheet id: ${report.spreadsheetId})`,
+          });
+        } catch (err) {
+          if (isSheetsApiDisabledError(err)) {
+            await client.replyMessage(event.replyToken, {
+              type: "text",
+              text: buildSheetsSetupMessage(err),
+            });
+            console.warn("Sheets API disabled:", err?.originalMessage || err?.message);
+          } else {
+            throw err;
+          }
+        }
         continue;
       }
 
@@ -92,8 +116,16 @@ app.post("/webhook", line.middleware(config), async (req, res) => {
 
         if (isImageFile && uploaded) {
           const parsedExpense = await extractExpenseFromImage(savePath);
-          const report = await appendExpenseReportRow(receivedAt, uploaded, parsedExpense);
-          console.log("expense report updated:", report?.spreadsheetId);
+          try {
+            const report = await appendExpenseReportRow(receivedAt, uploaded, parsedExpense);
+            console.log("expense report updated:", report?.spreadsheetId);
+          } catch (err) {
+            if (isSheetsApiDisabledError(err)) {
+              console.warn("Sheets API disabled. Skip expense report row for now:", err?.originalMessage || err?.message);
+            } else {
+              throw err;
+            }
+          }
         }
 
         continue;
@@ -126,8 +158,16 @@ app.post("/webhook", line.middleware(config), async (req, res) => {
 
         if (uploaded) {
           const parsedExpense = await extractExpenseFromImage(savePath);
-          const report = await appendExpenseReportRow(receivedAt, uploaded, parsedExpense);
-          console.log("expense report updated:", report?.spreadsheetId);
+          try {
+            const report = await appendExpenseReportRow(receivedAt, uploaded, parsedExpense);
+            console.log("expense report updated:", report?.spreadsheetId);
+          } catch (err) {
+            if (isSheetsApiDisabledError(err)) {
+              console.warn("Sheets API disabled. Skip expense report row for now:", err?.originalMessage || err?.message);
+            } else {
+              throw err;
+            }
+          }
         }
 
         continue;
