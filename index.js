@@ -10,6 +10,8 @@ const {
   appendExpenseReportRow,
   ensureMonthlyExpenseSheet,
   isSheetsApiDisabledError,
+  listMonthlyExpenseImages,
+  downloadDriveFile,
 } = require("./sheets");
 
 const config = {
@@ -63,6 +65,14 @@ function mimeTypeFromExtension(ext = "") {
   return "image/jpeg";
 }
 
+
+function extFromMimeType(mimeType = "") {
+  if (mimeType.includes("png")) return ".png";
+  if (mimeType.includes("heic")) return ".heic";
+  if (mimeType.includes("heif")) return ".heif";
+  return ".jpg";
+}
+
 async function safeExtractExpenseFromImage(savePath, mimeType) {
   try {
     const result = await extractExpenseFromImage(savePath, mimeType);
@@ -93,9 +103,28 @@ app.post("/webhook", line.middleware(config), async (req, res) => {
       if (msg.type === "text" && isCreateExpenseSheetCommand(msg.text || "")) {
         try {
           const report = await ensureMonthlyExpenseSheet(receivedAt);
+          console.log("manual report command received");
+
+          const files = await listMonthlyExpenseImages(receivedAt);
+          console.log(`found ${files.length} expense images in Drive month folder`);
+
+          let processed = 0;
+          for (const file of files) {
+            const ext = extFromMimeType(file.mimeType || "");
+            const savePath = path.join("downloads", `drive_${file.id}${ext}`);
+            fs.mkdirSync("downloads", { recursive: true });
+
+            await downloadDriveFile(file.id, savePath);
+            const parsedExpense = await safeExtractExpenseFromImage(savePath, file.mimeType || mimeTypeFromExtension(ext));
+
+            await appendExpenseReportRow(receivedAt, { name: file.name, webViewLink: file.webViewLink }, parsedExpense);
+            console.log("expense row payload:", parsedExpense?.data, "from", file.name);
+            processed += 1;
+          }
+
           await client.replyMessage(event.replyToken, {
             type: "text",
-            text: `Done. Expense report sheet is ready for ${receivedAt.getFullYear()}_${pad2(receivedAt.getMonth() + 1)} (sheet id: ${report.spreadsheetId})`,
+            text: `Done. Expense report sheet is ready for ${receivedAt.getFullYear()}_${pad2(receivedAt.getMonth() + 1)} (sheet id: ${report.spreadsheetId}). Processed ${processed} image(s).`,
           });
         } catch (err) {
           if (isSheetsApiDisabledError(err)) {

@@ -228,8 +228,57 @@ async function appendExpenseReportRow(receivedAt, uploadedFile, parsedExpense) {
   }
 }
 
+
+async function listMonthlyExpenseImages(receivedAt = new Date()) {
+  const rootId = process.env.DRIVE_ROOT_FOLDER_ID;
+  if (!rootId) throw new Error("Missing DRIVE_ROOT_FOLDER_ID in .env");
+
+  const { drive } = await getClients();
+  const monthName = monthFolderNameFromDate(receivedAt);
+  const monthFolder = await findFolder(drive, rootId, monthName);
+  if (!monthFolder) return [];
+
+  const expenseFolder = await findFolder(drive, monthFolder.id, "expense");
+  if (!expenseFolder) return [];
+
+  const q = [
+    `'${expenseFolder.id}' in parents`,
+    "trashed=false",
+    "mimeType contains 'image/'",
+  ].join(" and ");
+
+  const res = await drive.files.list({
+    q,
+    fields: "files(id,name,mimeType,webViewLink)",
+    spaces: "drive",
+    pageSize: 1000,
+    supportsAllDrives: true,
+    includeItemsFromAllDrives: true,
+  });
+
+  return res.data.files || [];
+}
+
+async function downloadDriveFile(fileId, localPath) {
+  const { drive } = await getClients();
+  const out = require("fs").createWriteStream(localPath);
+  const resp = await drive.files.get(
+    { fileId, alt: "media", supportsAllDrives: true },
+    { responseType: "stream" }
+  );
+
+  await new Promise((resolve, reject) => {
+    resp.data.pipe(out);
+    resp.data.on("error", reject);
+    out.on("finish", resolve);
+    out.on("error", reject);
+  });
+}
+
 module.exports = {
   appendExpenseReportRow,
   ensureMonthlyExpenseSheet,
   isSheetsApiDisabledError,
+  listMonthlyExpenseImages,
+  downloadDriveFile,
 };
