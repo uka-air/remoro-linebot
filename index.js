@@ -55,6 +55,20 @@ function buildSheetsSetupMessage(err) {
   return `${base} Please enable Sheets API in Google Cloud Console, wait a few minutes, then try again.`;
 }
 
+
+async function safeExtractExpenseFromImage(savePath) {
+  try {
+    return await extractExpenseFromImage(savePath);
+  } catch (err) {
+    console.error("expense parse failed:", err?.message || err);
+    return {
+      status: "error",
+      reason: `Parse failed: ${err?.message || "unknown error"}`,
+      data: null,
+    };
+  }
+}
+
 app.post("/webhook", line.middleware(config), async (req, res) => {
   try {
     const events = req.body.events || [];
@@ -115,7 +129,7 @@ app.post("/webhook", line.middleware(config), async (req, res) => {
         console.log("uploaded:", uploaded?.webViewLink);
 
         if (isImageFile && uploaded) {
-          const parsedExpense = await extractExpenseFromImage(savePath);
+          const parsedExpense = await safeExtractExpenseFromImage(savePath);
           try {
             const report = await appendExpenseReportRow(receivedAt, uploaded, parsedExpense);
             console.log("expense report updated:", report?.spreadsheetId);
@@ -157,7 +171,7 @@ app.post("/webhook", line.middleware(config), async (req, res) => {
         console.log("uploaded image:", uploaded?.webViewLink);
 
         if (uploaded) {
-          const parsedExpense = await extractExpenseFromImage(savePath);
+          const parsedExpense = await safeExtractExpenseFromImage(savePath);
           try {
             const report = await appendExpenseReportRow(receivedAt, uploaded, parsedExpense);
             console.log("expense report updated:", report?.spreadsheetId);
