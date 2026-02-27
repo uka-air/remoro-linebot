@@ -142,6 +142,16 @@ async function getOrCreateMonthlyExpenseSpreadsheet(drive, sheets, rootFolderId,
   return spreadsheetId;
 }
 
+
+async function ensureMonthlyExpenseSheet(receivedAt = new Date()) {
+  const rootId = process.env.DRIVE_ROOT_FOLDER_ID;
+  if (!rootId) throw new Error("Missing DRIVE_ROOT_FOLDER_ID in .env");
+
+  const { drive, sheets } = await getClients();
+  const spreadsheetId = await getOrCreateMonthlyExpenseSpreadsheet(drive, sheets, rootId, receivedAt);
+  return { spreadsheetId };
+}
+
 async function appendExpenseReportRow(receivedAt, uploadedFile, parsedExpense) {
   const rootId = process.env.DRIVE_ROOT_FOLDER_ID;
   if (!rootId) throw new Error("Missing DRIVE_ROOT_FOLDER_ID in .env");
@@ -177,4 +187,4 @@ async function appendExpenseReportRow(receivedAt, uploadedFile, parsedExpense) {
   return { spreadsheetId };
 }
 
-module.exports = { appendExpenseReportRow };
+module.exports = { appendExpenseReportRow, ensureMonthlyExpenseSheet };

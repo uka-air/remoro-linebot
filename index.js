@@ -6,7 +6,7 @@ const path = require("path");
 
 const { uploadFileToDrive } = require("./drive"); // 👈 สำคัญ
 const { extractExpenseFromImage } = require("./image-reader");
-const { appendExpenseReportRow } = require("./sheets");
+const { appendExpenseReportRow, ensureMonthlyExpenseSheet } = require("./sheets");
 
 const config = {
   channelSecret: process.env.CHANNEL_SECRET,
@@ -34,6 +34,15 @@ function extFromContentType(contentType = "") {
   return ".jpg";
 }
 
+function isCreateExpenseSheetCommand(text = "") {
+  const normalized = text.trim().toLowerCase();
+  return [
+    "create expense report",
+    "make expense report",
+    "create google sheet",
+  ].includes(normalized);
+}
+
 app.post("/webhook", line.middleware(config), async (req, res) => {
   try {
     const events = req.body.events || [];
@@ -44,6 +53,16 @@ app.post("/webhook", line.middleware(config), async (req, res) => {
 
       const msg = event.message;
       const receivedAt = new Date(); // ใช้เวลาที่บอทได้รับ
+
+      // ---------- TEXT (create monthly expense sheet) ----------
+      if (msg.type === "text" && isCreateExpenseSheetCommand(msg.text || "")) {
+        const report = await ensureMonthlyExpenseSheet(receivedAt);
+        await client.replyMessage(event.replyToken, {
+          type: "text",
+          text: `Done. Expense report sheet is ready for ${receivedAt.getFullYear()}_${pad2(receivedAt.getMonth() + 1)} (sheet id: ${report.spreadsheetId})`,
+        });
+        continue;
+      }
 
       // ---------- FILE (PDF) ----------
       if (msg.type === "file") {
