@@ -32,6 +32,30 @@ function extFromContentType(contentType = "") {
   return ".jpg";
 }
 
+async function convertImageToJpg(sourcePath) {
+  let sharp;
+  try {
+    // optional dependency in environments where image conversion is enabled
+    sharp = require("sharp");
+  } catch (err) {
+    console.warn("sharp is not installed, skip jpg conversion:", err?.message || err);
+    return sourcePath;
+  }
+
+  const parsed = path.parse(sourcePath);
+  const jpgPath = path.join(parsed.dir, `${parsed.name}.jpg`);
+
+  await sharp(sourcePath)
+    .jpeg({ quality: 90 })
+    .toFile(jpgPath);
+
+  if (jpgPath !== sourcePath && fs.existsSync(sourcePath)) {
+    fs.unlinkSync(sourcePath);
+  }
+
+  return jpgPath;
+}
+
 app.post("/webhook", line.middleware(config), async (req, res) => {
   try {
     const events = req.body.events || [];
@@ -61,9 +85,19 @@ app.post("/webhook", line.middleware(config), async (req, res) => {
           ws.on("error", reject);
         });
 
+        let uploadPath = savePath;
+        let uploadName = originalName;
+
+        if (isImageFile) {
+          uploadPath = await convertImageToJpg(savePath);
+          uploadName = path.extname(uploadPath).toLowerCase() === ".jpg"
+            ? `${path.parse(originalName).name}.jpg`
+            : originalName;
+        }
+
         const uploaded = await uploadFileToDrive(
-          savePath,
-          originalName,
+          uploadPath,
+          uploadName,
           receivedAt,
           isImageFile ? { category: "expense" } : {}
         );
@@ -93,8 +127,13 @@ app.post("/webhook", line.middleware(config), async (req, res) => {
           ws.on("error", reject);
         });
 
+        const jpgPath = await convertImageToJpg(savePath);
+        const jpgName = path.extname(jpgPath).toLowerCase() === ".jpg"
+          ? `${path.parse(fileName).name}.jpg`
+          : fileName;
+
         // ส่ง flag ว่าเป็น expense
-        const uploaded = await uploadFileToDrive(savePath, fileName, receivedAt, { category: "expense" });
+        const uploaded = await uploadFileToDrive(jpgPath, jpgName, receivedAt, { category: "expense" });
         console.log("uploaded image:", uploaded?.webViewLink);
 
         continue;
