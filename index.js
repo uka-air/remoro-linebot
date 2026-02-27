@@ -5,6 +5,8 @@ const fs = require("fs");
 const path = require("path");
 
 const { uploadFileToDrive } = require("./drive"); // 👈 สำคัญ
+const { extractExpenseFromImage } = require("./image-reader");
+const { appendExpenseReportRow } = require("./sheets");
 
 const config = {
   channelSecret: process.env.CHANNEL_SECRET,
@@ -69,6 +71,12 @@ app.post("/webhook", line.middleware(config), async (req, res) => {
         );
         console.log("uploaded:", uploaded?.webViewLink);
 
+        if (isImageFile && uploaded) {
+          const parsedExpense = await extractExpenseFromImage(savePath);
+          const report = await appendExpenseReportRow(receivedAt, uploaded, parsedExpense);
+          console.log("expense report updated:", report?.spreadsheetId);
+        }
+
         continue;
       }
 
@@ -96,6 +104,12 @@ app.post("/webhook", line.middleware(config), async (req, res) => {
         // ส่ง flag ว่าเป็น expense
         const uploaded = await uploadFileToDrive(savePath, fileName, receivedAt, { category: "expense" });
         console.log("uploaded image:", uploaded?.webViewLink);
+
+        if (uploaded) {
+          const parsedExpense = await extractExpenseFromImage(savePath);
+          const report = await appendExpenseReportRow(receivedAt, uploaded, parsedExpense);
+          console.log("expense report updated:", report?.spreadsheetId);
+        }
 
         continue;
       }
