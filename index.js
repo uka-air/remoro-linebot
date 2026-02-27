@@ -56,9 +56,18 @@ function buildSheetsSetupMessage(err) {
 }
 
 
-async function safeExtractExpenseFromImage(savePath) {
+function mimeTypeFromExtension(ext = "") {
+  if (ext === ".png") return "image/png";
+  if (ext === ".heic") return "image/heic";
+  if (ext === ".heif") return "image/heif";
+  return "image/jpeg";
+}
+
+async function safeExtractExpenseFromImage(savePath, mimeType) {
   try {
-    return await extractExpenseFromImage(savePath);
+    const result = await extractExpenseFromImage(savePath, mimeType);
+    console.log("expense parse result:", result);
+    return result;
   } catch (err) {
     console.error("expense parse failed:", err?.message || err);
     return {
@@ -129,9 +138,10 @@ app.post("/webhook", line.middleware(config), async (req, res) => {
         console.log("uploaded:", uploaded?.webViewLink);
 
         if (isImageFile && uploaded) {
-          const parsedExpense = await safeExtractExpenseFromImage(savePath);
+          const parsedExpense = await safeExtractExpenseFromImage(savePath, mimeTypeFromExtension(ext));
           try {
             const report = await appendExpenseReportRow(receivedAt, uploaded, parsedExpense);
+            console.log("expense row payload:", parsedExpense?.data);
             console.log("expense report updated:", report?.spreadsheetId);
           } catch (err) {
             if (isSheetsApiDisabledError(err)) {
@@ -171,9 +181,10 @@ app.post("/webhook", line.middleware(config), async (req, res) => {
         console.log("uploaded image:", uploaded?.webViewLink);
 
         if (uploaded) {
-          const parsedExpense = await safeExtractExpenseFromImage(savePath);
+          const parsedExpense = await safeExtractExpenseFromImage(savePath, mimeTypeFromExtension(ext));
           try {
             const report = await appendExpenseReportRow(receivedAt, uploaded, parsedExpense);
+            console.log("expense row payload:", parsedExpense?.data);
             console.log("expense report updated:", report?.spreadsheetId);
           } catch (err) {
             if (isSheetsApiDisabledError(err)) {
