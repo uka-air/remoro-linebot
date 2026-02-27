@@ -275,10 +275,36 @@ async function downloadDriveFile(fileId, localPath) {
   });
 }
 
+
+async function appendExpenseTotalRow(receivedAt, totalAmount) {
+  try {
+    const rootId = process.env.DRIVE_ROOT_FOLDER_ID;
+    if (!rootId) throw new Error("Missing DRIVE_ROOT_FOLDER_ID in .env");
+
+    const { drive, sheets } = await getClients();
+    const spreadsheetId = await getOrCreateMonthlyExpenseSpreadsheet(drive, sheets, rootId, receivedAt);
+
+    await sheets.spreadsheets.values.append({
+      spreadsheetId,
+      range: "expense_report!A:C",
+      valueInputOption: "USER_ENTERED",
+      insertDataOption: "INSERT_ROWS",
+      requestBody: {
+        values: [[null, "TOTAL", totalAmount]],
+      },
+    });
+
+    return { spreadsheetId };
+  } catch (err) {
+    throw toFriendlySheetsError(err);
+  }
+}
+
 module.exports = {
   appendExpenseReportRow,
   ensureMonthlyExpenseSheet,
   isSheetsApiDisabledError,
   listMonthlyExpenseImages,
   downloadDriveFile,
+  appendExpenseTotalRow,
 };
