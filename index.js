@@ -41,13 +41,34 @@ function extFromContentType(contentType = "") {
   return ".jpg";
 }
 
-function isCreateExpenseSheetCommand(text = "") {
+function parseExpenseReportCommand(text = "") {
   const normalized = text.trim().toLowerCase();
-  return [
+  const baseCommands = [
     "create expense report",
     "make expense report",
     "create google sheet",
-  ].includes(normalized);
+  ];
+
+  for (const base of baseCommands) {
+    if (normalized === base) {
+      return { matched: true, targetDate: new Date(), targetMonthText: null };
+    }
+
+    const m = normalized.match(new RegExp(`^${base}\\s+(\\d{4})_(\\d{2})$`));
+    if (m) {
+      const year = Number(m[1]);
+      const month = Number(m[2]);
+      if (month >= 1 && month <= 12) {
+        return {
+          matched: true,
+          targetDate: new Date(year, month - 1, 1),
+          targetMonthText: `${m[1]}_${m[2]}`,
+        };
+      }
+    }
+  }
+
+  return { matched: false, targetDate: null, targetMonthText: null };
 }
 
 
@@ -106,13 +127,17 @@ app.post("/webhook", line.middleware(config), async (req, res) => {
       const receivedAt = new Date(); // ใช้เวลาที่บอทได้รับ
 
       // ---------- TEXT (create monthly expense sheet) ----------
-      if (msg.type === "text" && isCreateExpenseSheetCommand(msg.text || "")) {
+      const reportCommand = msg.type === "text" ? parseExpenseReportCommand(msg.text || "") : { matched: false };
+      if (reportCommand.matched) {
         try {
-          const report = await ensureMonthlyExpenseSheet(receivedAt);
-          console.log("manual report command received");
+          const targetDate = reportCommand.targetDate || receivedAt;
+          const targetMonth = reportCommand.targetMonthText || `${targetDate.getFullYear()}_${pad2(targetDate.getMonth() + 1)}`;
 
-          const files = await listMonthlyExpenseImages(receivedAt);
-          console.log(`found ${files.length} expense images in Drive month folder`);
+          const report = await ensureMonthlyExpenseSheet(targetDate);
+          console.log("manual report command received for", targetMonth);
+
+          const files = await listMonthlyExpenseImages(targetDate);
+          console.log(`found ${files.length} expense images in Drive folder ${targetMonth}`);
 
           let processed = 0;
           let skippedMissingGemini = 0;
@@ -131,7 +156,7 @@ app.post("/webhook", line.middleware(config), async (req, res) => {
               continue;
             }
 
-            await appendExpenseReportRow(receivedAt, { name: file.name, webViewLink: file.webViewLink }, parsedExpense);
+            await appendExpenseReportRow(targetDate, { name: file.name, webViewLink: file.webViewLink }, parsedExpense);
             console.log("expense row payload:", parsedExpense?.data, "from", file.name);
             const amount = Number(parsedExpense?.data?.totalAmount);
             if (Number.isFinite(amount)) totalAmount += amount;
@@ -139,13 +164,13 @@ app.post("/webhook", line.middleware(config), async (req, res) => {
           }
 
           if (processed > 0) {
-            await appendExpenseTotalRow(receivedAt, totalAmount);
+            await appendExpenseTotalRow(targetDate, totalAmount);
             console.log("expense total row appended:", totalAmount);
           }
 
           await client.replyMessage(event.replyToken, {
             type: "text",
-            text: `Done. Expense report sheet is ready for ${receivedAt.getFullYear()}_${pad2(receivedAt.getMonth() + 1)} (sheet id: ${report.spreadsheetId}). Processed ${processed} image(s). Total ${totalAmount}.${skippedMissingGemini ? ` Skipped ${skippedMissingGemini} image(s): missing GEMINI_API_KEY.` : ""}`,
+            text: `Done. Expense report sheet is ready for ${targetMonth} (sheet id: ${report.spreadsheetId}). Processed ${processed} image(s). Total ${totalAmount}.${skippedMissingGemini ? ` Skipped ${skippedMissingGemini} image(s): missing GEMINI_API_KEY.` : ""}`,
           });
         } catch (err) {
           if (isSheetsApiDisabledError(err)) {
