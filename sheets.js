@@ -103,7 +103,34 @@ async function findSpreadsheetInFolder(drive, parentId, name) {
   return res.data.files?.[0] || null;
 }
 
+async function ensureWorksheetExists(sheets, spreadsheetId, sheetTitle) {
+  const meta = await sheets.spreadsheets.get({
+    spreadsheetId,
+    fields: "sheets(properties(title))",
+  });
+
+  const exists = (meta.data.sheets || []).some(
+    (sheet) => sheet?.properties?.title === sheetTitle
+  );
+
+  if (!exists) {
+    await sheets.spreadsheets.batchUpdate({
+      spreadsheetId,
+      requestBody: {
+        requests: [
+          {
+            addSheet: {
+              properties: { title: sheetTitle },
+            },
+          },
+        ],
+      },
+    });
+  }
+}
+
 async function ensureHeaderRow(sheets, spreadsheetId) {
+  await ensureWorksheetExists(sheets, spreadsheetId, "expense_report");
   const headers = [[
     "receivedAt",
     "fileName",
