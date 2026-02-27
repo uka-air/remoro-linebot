@@ -43,6 +43,11 @@ async function convertImageToJpg(sourcePath) {
   }
 
   const parsed = path.parse(sourcePath);
+  const sourceExt = parsed.ext.toLowerCase();
+  if (sourceExt === ".jpg") {
+    return sourcePath;
+  }
+
   const jpgPath = path.join(parsed.dir, `${parsed.name}.jpg`);
 
   await sharp(sourcePath)
