@@ -12,6 +12,14 @@ function safeParseJson(raw) {
   }
 }
 
+function normalizeExpenseData(data) {
+  return {
+    date: data?.date ?? null,
+    merchant: data?.merchant ?? null,
+    totalAmount: data?.totalAmount ?? null,
+  };
+}
+
 async function extractExpenseFromImage(localPath) {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
@@ -27,13 +35,9 @@ async function extractExpenseFromImage(localPath) {
 
   const prompt = `Read this expense receipt/invoice image and return ONLY JSON with this schema:
 {
-  "documentType": "receipt|invoice|unknown",
-  "merchant": "string|null",
   "date": "YYYY-MM-DD|null",
-  "totalAmount": number|null,
-  "currency": "THB|USD|...|null",
-  "taxAmount": number|null,
-  "summary": "short string"
+  "merchant": "string|null",
+  "totalAmount": number|null
 }
 If a field is not visible, use null.`;
 
@@ -86,7 +90,7 @@ If a field is not visible, use null.`;
   return {
     status: "ok",
     reason: null,
-    data: parsed,
+    data: normalizeExpenseData(parsed),
   };
 }
 

@@ -132,29 +132,20 @@ async function ensureWorksheetExists(sheets, spreadsheetId, sheetTitle) {
 async function ensureHeaderRow(sheets, spreadsheetId) {
   await ensureWorksheetExists(sheets, spreadsheetId, "expense_report");
   const headers = [[
-    "receivedAt",
-    "fileName",
-    "fileUrl",
-    "documentType",
-    "merchant",
-    "expenseDate",
+    "transactionDate",
+    "companyName",
     "totalAmount",
-    "currency",
-    "taxAmount",
-    "summary",
-    "readStatus",
-    "readReason",
   ]];
 
   const existing = await sheets.spreadsheets.values.get({
     spreadsheetId,
-    range: "expense_report!A1:L1",
+    range: "expense_report!A1:C1",
   }).catch(() => null);
 
   if (!existing?.data?.values?.length) {
     await sheets.spreadsheets.values.update({
       spreadsheetId,
-      range: "expense_report!A1:L1",
+      range: "expense_report!A1:C1",
       valueInputOption: "RAW",
       requestBody: { values: headers },
     });
@@ -219,23 +210,14 @@ async function appendExpenseReportRow(receivedAt, uploadedFile, parsedExpense) {
 
     await sheets.spreadsheets.values.append({
       spreadsheetId,
-      range: "expense_report!A:L",
+      range: "expense_report!A:C",
       valueInputOption: "USER_ENTERED",
       insertDataOption: "INSERT_ROWS",
       requestBody: {
         values: [[
-          receivedAt.toISOString(),
-          uploadedFile?.name || "",
-          uploadedFile?.webViewLink || "",
-          data.documentType ?? null,
-          data.merchant ?? null,
           data.date ?? null,
+          data.merchant ?? null,
           data.totalAmount ?? null,
-          data.currency ?? null,
-          data.taxAmount ?? null,
-          data.summary ?? null,
-          parsedExpense?.status || "unknown",
-          parsedExpense?.reason || "",
         ]],
       },
     });
