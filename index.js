@@ -73,6 +73,11 @@ function extFromMimeType(mimeType = "") {
   return ".jpg";
 }
 
+
+function isGeminiMissing(parsedExpense) {
+  return parsedExpense?.status === "skipped" && /GEMINI_API_KEY/i.test(parsedExpense?.reason || "");
+}
+
 async function safeExtractExpenseFromImage(savePath, mimeType) {
   try {
     const result = await extractExpenseFromImage(savePath, mimeType);
@@ -109,6 +114,7 @@ app.post("/webhook", line.middleware(config), async (req, res) => {
           console.log(`found ${files.length} expense images in Drive month folder`);
 
           let processed = 0;
+          let skippedMissingGemini = 0;
           for (const file of files) {
             const ext = extFromMimeType(file.mimeType || "");
             const savePath = path.join("downloads", `drive_${file.id}${ext}`);
@@ -117,6 +123,12 @@ app.post("/webhook", line.middleware(config), async (req, res) => {
             await downloadDriveFile(file.id, savePath);
             const parsedExpense = await safeExtractExpenseFromImage(savePath, file.mimeType || mimeTypeFromExtension(ext));
 
+            if (isGeminiMissing(parsedExpense)) {
+              skippedMissingGemini += 1;
+              console.warn("skip row append due to missing GEMINI_API_KEY for", file.name);
+              continue;
+            }
+
             await appendExpenseReportRow(receivedAt, { name: file.name, webViewLink: file.webViewLink }, parsedExpense);
             console.log("expense row payload:", parsedExpense?.data, "from", file.name);
             processed += 1;
@@ -124,7 +136,7 @@ app.post("/webhook", line.middleware(config), async (req, res) => {
 
           await client.replyMessage(event.replyToken, {
             type: "text",
-            text: `Done. Expense report sheet is ready for ${receivedAt.getFullYear()}_${pad2(receivedAt.getMonth() + 1)} (sheet id: ${report.spreadsheetId}). Processed ${processed} image(s).`,
+            text: `Done. Expense report sheet is ready for ${receivedAt.getFullYear()}_${pad2(receivedAt.getMonth() + 1)} (sheet id: ${report.spreadsheetId}). Processed ${processed} image(s).${skippedMissingGemini ? ` Skipped ${skippedMissingGemini} image(s): missing GEMINI_API_KEY.` : ""}`,
           });
         } catch (err) {
           if (isSheetsApiDisabledError(err)) {
@@ -168,7 +180,9 @@ app.post("/webhook", line.middleware(config), async (req, res) => {
 
         if (isImageFile && uploaded) {
           const parsedExpense = await safeExtractExpenseFromImage(savePath, mimeTypeFromExtension(ext));
-          try {
+          if (isGeminiMissing(parsedExpense)) {
+            console.warn("skip row append: GEMINI_API_KEY is missing");
+          } else try {
             const report = await appendExpenseReportRow(receivedAt, uploaded, parsedExpense);
             console.log("expense row payload:", parsedExpense?.data);
             console.log("expense report updated:", report?.spreadsheetId);
@@ -211,7 +225,9 @@ app.post("/webhook", line.middleware(config), async (req, res) => {
 
         if (uploaded) {
           const parsedExpense = await safeExtractExpenseFromImage(savePath, mimeTypeFromExtension(ext));
-          try {
+          if (isGeminiMissing(parsedExpense)) {
+            console.warn("skip row append: GEMINI_API_KEY is missing");
+          } else try {
             const report = await appendExpenseReportRow(receivedAt, uploaded, parsedExpense);
             console.log("expense row payload:", parsedExpense?.data);
             console.log("expense report updated:", report?.spreadsheetId);
