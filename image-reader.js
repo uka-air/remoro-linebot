@@ -73,8 +73,6 @@ async function extractExpenseFromImage(localPath, mimeType) {
   const model = process.env.GEMINI_MODEL || "gemini-2.5-flash";
   const finalMimeType = mimeType || mimeTypeFromPath(localPath);
 
-  console.log(`[gemini] request model=${model} mimeType=${finalMimeType} file=${localPath}`);
-
   const prompt = `Read this expense receipt/invoice image and return ONLY JSON with this schema:
 {
   "date": "YYYY-MM-DD|null",
@@ -112,10 +110,8 @@ If a field is not visible, use null.`;
     };
   }
 
-  console.log(`[gemini] response model=${currentModel} status=${resp.status}`);
   const json = await resp.json();
   const text = json?.candidates?.[0]?.content?.parts?.[0]?.text || "";
-  console.log("[gemini] raw text:", text || "<empty>");
   const parsed = safeParseJson(text);
 
   if (!parsed) {
@@ -128,7 +124,6 @@ If a field is not visible, use null.`;
   }
 
   const normalized = normalizeExpenseData(parsed);
-  console.log("[gemini] normalized:", normalized);
 
   return {
     status: "ok",
