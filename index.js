@@ -100,6 +100,14 @@ function isGeminiMissing(parsedExpense) {
   return parsedExpense?.status === "skipped" && /GEMINI_API_KEY/i.test(parsedExpense?.reason || "");
 }
 
+
+function expenseDateOrReceivedAt(parsedExpense, receivedAt) {
+  const raw = parsedExpense?.data?.date;
+  if (typeof raw !== "string") return receivedAt;
+  const d = new Date(`${raw}T00:00:00`);
+  return Number.isNaN(d.getTime()) ? receivedAt : d;
+}
+
 async function safeExtractExpenseFromImage(savePath, mimeType) {
   try {
     const result = await extractExpenseFromImage(savePath, mimeType);
@@ -116,18 +124,18 @@ async function safeExtractExpenseFromImage(savePath, mimeType) {
 }
 
 
-async function appendExpenseDataNonBlocking({ savePath, mimeType, receivedAt, uploaded, sourceLabel }) {
+async function appendExpenseDataNonBlocking({ savePath, mimeType, receivedAt, uploaded, sourceLabel, parsedExpense }) {
   try {
     if (!uploaded) return;
 
-    const parsedExpense = await safeExtractExpenseFromImage(savePath, mimeType);
-    if (isGeminiMissing(parsedExpense)) {
+    const parsed = parsedExpense || await safeExtractExpenseFromImage(savePath, mimeType);
+    if (isGeminiMissing(parsed)) {
       console.warn(`skip row append (${sourceLabel}): GEMINI_API_KEY is missing`);
       return;
     }
 
-    const report = await appendExpenseReportRow(receivedAt, uploaded, parsedExpense);
-    console.log("expense row payload:", parsedExpense?.data);
+    const report = await appendExpenseReportRow(receivedAt, uploaded, parsed);
+    console.log("expense row payload:", parsed?.data);
     console.log(`expense report updated (${sourceLabel}):`, report?.spreadsheetId);
   } catch (err) {
     if (isSheetsApiDisabledError(err)) {
@@ -224,22 +232,34 @@ app.post("/webhook", line.middleware(config), async (req, res) => {
           ws.on("error", reject);
         });
 
-        const uploaded = await uploadFileToDrive(
-          savePath,
-          originalName,
-          receivedAt,
-          isImageFile ? { category: "expense" } : {}
-        );
-        console.log("uploaded:", uploaded?.webViewLink);
+        if (isImageFile) {
+          const parsedExpense = await safeExtractExpenseFromImage(savePath, mimeTypeFromExtension(ext));
+          const expenseDate = expenseDateOrReceivedAt(parsedExpense, receivedAt);
 
-        if (isImageFile && uploaded) {
+          const uploaded = await uploadFileToDrive(
+            savePath,
+            originalName,
+            expenseDate,
+            { category: "expense", expenseDate: parsedExpense?.data?.date }
+          );
+          console.log("uploaded:", uploaded?.webViewLink);
+
           await appendExpenseDataNonBlocking({
             savePath,
             mimeType: mimeTypeFromExtension(ext),
-            receivedAt,
+            receivedAt: expenseDate,
             uploaded,
             sourceLabel: "file-message",
+            parsedExpense,
           });
+        } else {
+          const uploaded = await uploadFileToDrive(
+            savePath,
+            originalName,
+            receivedAt,
+            {}
+          );
+          console.log("uploaded:", uploaded?.webViewLink);
         }
 
         continue;
@@ -266,17 +286,24 @@ app.post("/webhook", line.middleware(config), async (req, res) => {
           ws.on("error", reject);
         });
 
-        // ส่ง flag ว่าเป็น expense
-        const uploaded = await uploadFileToDrive(savePath, fileName, receivedAt, { category: "expense" });
+        const parsedExpense = await safeExtractExpenseFromImage(savePath, mimeTypeFromExtension(ext));
+        const expenseDate = expenseDateOrReceivedAt(parsedExpense, receivedAt);
+
+        // ส่ง flag ว่าเป็น expense (ตัดสินใจโฟลเดอร์ด้วยวันที่จาก OCR)
+        const uploaded = await uploadFileToDrive(savePath, fileName, expenseDate, {
+          category: "expense",
+          expenseDate: parsedExpense?.data?.date,
+        });
         console.log("uploaded image:", uploaded?.webViewLink);
 
         if (uploaded) {
           await appendExpenseDataNonBlocking({
             savePath,
             mimeType: mimeTypeFromExtension(ext),
-            receivedAt,
+            receivedAt: expenseDate,
             uploaded,
             sourceLabel: "image-message",
+            parsedExpense,
           });
         }
 
