@@ -276,7 +276,7 @@ async function downloadDriveFile(fileId, localPath) {
 }
 
 
-async function appendExpenseTotalRow(receivedAt, totalAmount) {
+async function appendExpenseTotalRow(receivedAt) {
   try {
     const rootId = process.env.DRIVE_ROOT_FOLDER_ID;
     if (!rootId) throw new Error("Missing DRIVE_ROOT_FOLDER_ID in .env");
@@ -290,7 +290,7 @@ async function appendExpenseTotalRow(receivedAt, totalAmount) {
       valueInputOption: "USER_ENTERED",
       insertDataOption: "INSERT_ROWS",
       requestBody: {
-        values: [[null, "TOTAL", totalAmount]],
+        values: [[null, "TOTAL", "=SUM(C2:C)"]],
       },
     });
 

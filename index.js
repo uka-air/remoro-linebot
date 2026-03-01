@@ -164,7 +164,6 @@ app.post("/webhook", line.middleware(config), async (req, res) => {
 
           let processed = 0;
           let skippedMissingGemini = 0;
-          let totalAmount = 0;
           for (const file of files) {
             const ext = extFromMimeType(file.mimeType || "");
             const savePath = path.join("downloads", `drive_${file.id}${ext}`);
@@ -181,19 +180,17 @@ app.post("/webhook", line.middleware(config), async (req, res) => {
 
             await appendExpenseReportRow(targetDate, { name: file.name, webViewLink: file.webViewLink }, parsedExpense);
             console.log("expense row payload:", parsedExpense?.data, "from", file.name);
-            const amount = Number(parsedExpense?.data?.totalAmount);
-            if (Number.isFinite(amount)) totalAmount += amount;
             processed += 1;
           }
 
           if (processed > 0) {
-            await appendExpenseTotalRow(targetDate, totalAmount);
-            console.log("expense total row appended:", totalAmount);
+            await appendExpenseTotalRow(targetDate);
+            console.log("expense total row appended with formula");
           }
 
           await client.replyMessage(event.replyToken, {
             type: "text",
-            text: `Done. Expense report sheet is ready for ${targetMonth} (sheet id: ${report.spreadsheetId}). Processed ${processed} image(s). Total ${totalAmount}.${skippedMissingGemini ? ` Skipped ${skippedMissingGemini} image(s): missing GEMINI_API_KEY.` : ""}`,
+            text: `Done. Expense report sheet is ready for ${targetMonth} (sheet id: ${report.spreadsheetId}). Processed ${processed} image(s). Added TOTAL row with SUM formula.${skippedMissingGemini ? ` Skipped ${skippedMissingGemini} image(s): missing GEMINI_API_KEY.` : ""}`,
           });
         } catch (err) {
           if (isSheetsApiDisabledError(err)) {
