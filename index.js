@@ -103,6 +103,7 @@ function isGeminiMissing(parsedExpense) {
 async function safeExtractExpenseFromImage(savePath, mimeType) {
   try {
     const result = await extractExpenseFromImage(savePath, mimeType);
+    console.log("expense parse result:", result);
     return result;
   } catch (err) {
     console.error("expense parse failed:", err?.message || err);
@@ -183,6 +184,7 @@ app.post("/webhook", line.middleware(config), async (req, res) => {
             }
 
             await appendExpenseReportRow(targetDate, { name: file.name, webViewLink: file.webViewLink }, parsedExpense);
+            console.log("expense row payload:", parsedExpense?.data, "from", file.name);
             const amount = Number(parsedExpense?.data?.totalAmount);
             if (Number.isFinite(amount)) totalAmount += amount;
             processed += 1;
@@ -190,6 +192,7 @@ app.post("/webhook", line.middleware(config), async (req, res) => {
 
           if (processed > 0) {
             await appendExpenseTotalRow(targetDate, totalAmount);
+            console.log("expense total row appended:", totalAmount);
           }
 
           await client.replyMessage(event.replyToken, {
@@ -244,6 +247,7 @@ app.post("/webhook", line.middleware(config), async (req, res) => {
           receivedAt,
           isImageFile ? { category: "expense" } : {}
         );
+        console.log("uploaded:", uploaded?.webViewLink);
 
         if (isImageFile && uploaded) {
           const parsedExpense = await safeExtractExpenseFromImage(savePath, mimeTypeFromExtension(ext));
@@ -251,6 +255,8 @@ app.post("/webhook", line.middleware(config), async (req, res) => {
             console.warn("skip row append: GEMINI_API_KEY is missing");
           } else try {
             const report = await appendExpenseReportRow(receivedAt, uploaded, parsedExpense);
+            console.log("expense row payload:", parsedExpense?.data);
+            console.log("expense report updated:", report?.spreadsheetId);
           } catch (err) {
             if (isSheetsApiDisabledError(err)) {
               console.warn("Sheets API disabled. Skip expense report row for now:", err?.originalMessage || err?.message);
@@ -291,6 +297,7 @@ app.post("/webhook", line.middleware(config), async (req, res) => {
 
         // ส่ง flag ว่าเป็น expense
         const uploaded = await uploadFileToDrive(savePath, fileName, receivedAt, { category: "expense" });
+        console.log("uploaded image:", uploaded?.webViewLink);
 
         if (uploaded) {
           const parsedExpense = await safeExtractExpenseFromImage(savePath, mimeTypeFromExtension(ext));
@@ -298,6 +305,8 @@ app.post("/webhook", line.middleware(config), async (req, res) => {
             console.warn("skip row append: GEMINI_API_KEY is missing");
           } else try {
             const report = await appendExpenseReportRow(receivedAt, uploaded, parsedExpense);
+            console.log("expense row payload:", parsedExpense?.data);
+            console.log("expense report updated:", report?.spreadsheetId);
           } catch (err) {
             if (isSheetsApiDisabledError(err)) {
               console.warn("Sheets API disabled. Skip expense report row for now:", err?.originalMessage || err?.message);
