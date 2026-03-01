@@ -3,6 +3,9 @@ require("dotenv").config();
 const { google } = require("googleapis");
 const { getAuthClient } = require("./auth");
 
+const spreadsheetLocks = new Map();
+
+
 function pad2(n) {
   return String(n).padStart(2, "0");
 }
@@ -156,33 +159,45 @@ async function getOrCreateMonthlyExpenseSpreadsheet(drive, sheets, rootFolderId,
   const monthName = monthFolderNameFromDate(receivedAt);
   const monthFolderId = await getOrCreateFolder(drive, rootFolderId, monthName);
   const sheetFileName = `expense_report_${monthName}`;
+  const lockKey = `${monthFolderId}::${sheetFileName}`;
 
-  const existing = await findSpreadsheetInFolder(drive, monthFolderId, sheetFileName);
-  if (existing) {
-    await ensureHeaderRow(sheets, existing.id);
-    return existing.id;
+  if (spreadsheetLocks.has(lockKey)) return spreadsheetLocks.get(lockKey);
+
+  const task = (async () => {
+    const existing = await findSpreadsheetInFolder(drive, monthFolderId, sheetFileName);
+    if (existing) {
+      await ensureHeaderRow(sheets, existing.id);
+      return existing.id;
+    }
+
+    const created = await sheets.spreadsheets.create({
+      requestBody: {
+        properties: { title: sheetFileName },
+        sheets: [{ properties: { title: "expense_report" } }],
+      },
+      fields: "spreadsheetId",
+    });
+
+    const spreadsheetId = created.data.spreadsheetId;
+
+    await drive.files.update({
+      fileId: spreadsheetId,
+      addParents: monthFolderId,
+      removeParents: "root",
+      fields: "id, parents",
+      supportsAllDrives: true,
+    });
+
+    await ensureHeaderRow(sheets, spreadsheetId);
+    return spreadsheetId;
+  })();
+
+  spreadsheetLocks.set(lockKey, task);
+  try {
+    return await task;
+  } finally {
+    spreadsheetLocks.delete(lockKey);
   }
-
-  const created = await sheets.spreadsheets.create({
-    requestBody: {
-      properties: { title: sheetFileName },
-      sheets: [{ properties: { title: "expense_report" } }],
-    },
-    fields: "spreadsheetId",
-  });
-
-  const spreadsheetId = created.data.spreadsheetId;
-
-  await drive.files.update({
-    fileId: spreadsheetId,
-    addParents: monthFolderId,
-    removeParents: "root",
-    fields: "id, parents",
-    supportsAllDrives: true,
-  });
-
-  await ensureHeaderRow(sheets, spreadsheetId);
-  return spreadsheetId;
 }
 
 async function ensureMonthlyExpenseSheet(receivedAt = new Date()) {
