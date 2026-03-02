@@ -22,6 +22,14 @@ const config = {
 
 const app = express();
 
+let expenseHelpers = {};
+try {
+  // optional helper module from expense-parsing branch
+  expenseHelpers = require("./expense");
+} catch (_) {
+  expenseHelpers = {};
+}
+
 function pad2(n) { return String(n).padStart(2, "0"); }
 
 function makeImageName(receivedAt, messageId, ext) {
@@ -39,6 +47,53 @@ function extFromContentType(contentType = "") {
   if (contentType.includes("heif")) return ".heif";
   if (contentType.includes("png")) return ".png";
   return ".jpg";
+}
+
+function mimeTypeFromExtension(ext = "") {
+  const normalized = ext.toLowerCase();
+  if (normalized === ".png") return "image/png";
+  if (normalized === ".heic") return "image/heic";
+  if (normalized === ".heif") return "image/heif";
+  return "image/jpeg";
+}
+
+function expenseDateOrReceivedAt(parsedExpense, fallbackDate) {
+  const candidate = parsedExpense?.data?.date;
+  if (!candidate) return fallbackDate;
+
+  const parsed = new Date(candidate);
+  if (Number.isNaN(parsed.getTime())) return fallbackDate;
+  return parsed;
+}
+
+
+async function convertImageToJpg(sourcePath) {
+  let sharp;
+  try {
+    // optional dependency in environments where image conversion is enabled
+    sharp = require("sharp");
+  } catch (err) {
+    console.warn("sharp is not installed, skip jpg conversion:", err?.message || err);
+    return sourcePath;
+  }
+
+  const parsed = path.parse(sourcePath);
+  const sourceExt = parsed.ext.toLowerCase();
+  if (sourceExt === ".jpg") {
+    return sourcePath;
+  }
+
+  const jpgPath = path.join(parsed.dir, `${parsed.name}.jpg`);
+
+  await sharp(sourcePath)
+    .jpeg({ quality: 90 })
+    .toFile(jpgPath);
+
+  if (jpgPath !== sourcePath && fs.existsSync(sourcePath)) {
+    fs.unlinkSync(sourcePath);
+  }
+
+  return jpgPath;
 }
 
 function parseExpenseReportCommand(text = "") {
@@ -232,16 +287,44 @@ app.post("/webhook", line.middleware(config), async (req, res) => {
           ws.on("error", reject);
         });
 
-        if (isImageFile) {
-          const parsedExpense = await safeExtractExpenseFromImage(savePath, mimeTypeFromExtension(ext));
-          const expenseDate = expenseDateOrReceivedAt(parsedExpense, receivedAt);
+        let uploadPath = savePath;
+        let uploadName = originalName;
+        let parsedExpense = null;
+        let uploadedAt = receivedAt;
 
-          const uploaded = await uploadFileToDrive(
-            savePath,
-            originalName,
-            expenseDate,
-            { category: "expense", expenseDate: parsedExpense?.data?.date }
-          );
+        if (isImageFile) {
+          uploadPath = await convertImageToJpg(savePath);
+          uploadName = path.extname(uploadPath).toLowerCase() === ".jpg"
+            ? `${path.parse(originalName).name}.jpg`
+            : originalName;
+            if (typeof expenseHelpers.safeExtractExpenseFromImage === "function") {
+            parsedExpense = await expenseHelpers.safeExtractExpenseFromImage(
+              uploadPath,
+              mimeTypeFromExtension(path.extname(uploadPath))
+            );
+            uploadedAt = expenseDateOrReceivedAt(parsedExpense, receivedAt);
+          }
+        }
+
+        const uploaded = await uploadFileToDrive(
+          uploadPath,
+          uploadName,
+          uploadedAt,
+          isImageFile
+            ? { category: "expense", expenseDate: parsedExpense?.data?.date }
+            : {}
+        );
+        console.log("uploaded:", uploaded?.webViewLink);
+
+        if (isImageFile && typeof expenseHelpers.appendExpenseDataNonBlocking === "function") {
+          expenseHelpers.appendExpenseDataNonBlocking({
+            savePath: uploadPath,
+            mimeType: mimeTypeFromExtension(path.extname(uploadPath)),
+            receivedAt: uploadedAt,
+            uploaded,
+            sourceLabel: "file-message",
+            parsedExpense,
+          });
           console.log("uploaded:", uploaded?.webViewLink);
 
           await appendExpenseDataNonBlocking({
@@ -286,11 +369,16 @@ app.post("/webhook", line.middleware(config), async (req, res) => {
           ws.on("error", reject);
         });
 
+        const jpgPath = await convertImageToJpg(savePath);
+        const jpgName = path.extname(jpgPath).toLowerCase() === ".jpg"
+          ? `${path.parse(fileName).name}.jpg`
+          : fileName;
+
         const parsedExpense = await safeExtractExpenseFromImage(savePath, mimeTypeFromExtension(ext));
         const expenseDate = expenseDateOrReceivedAt(parsedExpense, receivedAt);
 
         // ส่ง flag ว่าเป็น expense (ตัดสินใจโฟลเดอร์ด้วยวันที่จาก OCR)
-        const uploaded = await uploadFileToDrive(savePath, fileName, expenseDate, {
+        const uploaded = await uploadFileToDrive(jpgPath, jpgName, expenseDate, {
           category: "expense",
           expenseDate: parsedExpense?.data?.date,
         });
