@@ -207,6 +207,15 @@ function parseCategoryFolder(fileName) {
 }
 
 
+
+function parseExpenseDate(value) {
+  if (!value || typeof value !== "string") return null;
+  const m = value.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!m) return null;
+  const d = new Date(`${m[1]}-${m[2]}-${m[3]}T00:00:00`);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
 // ---------- Main upload ----------
 async function uploadFileToDrive(localPath, fileName, receivedAt = new Date(), options = {}) {
 
@@ -225,8 +234,9 @@ async function uploadFileToDrive(localPath, fileName, receivedAt = new Date(), o
   }
 
   // 1) หาโฟลเดอร์เดือน
+  const expenseDate = parseExpenseDate(options.expenseDate);
   const monthName = options.category === "expense"
-    ? monthFromDate(receivedAt)
+    ? monthFromDate(expenseDate || receivedAt)
     : parseMonthFolder(fileName, receivedAt);
 
   // 2) สร้าง/หาโฟลเดอร์เดือน (ถ้า parse ไม่ได้ให้ลง Unsorted)

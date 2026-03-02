@@ -4,7 +4,10 @@ const fs = require("fs");
 const { google } = require("googleapis");
 const { authenticate } = require("@google-cloud/local-auth");
 
-const SCOPES = ["https://www.googleapis.com/auth/drive"];
+const SCOPES = [
+  "https://www.googleapis.com/auth/drive",
+  "https://www.googleapis.com/auth/spreadsheets",
+];
 const TOKEN_PATH = process.env.OAUTH_TOKEN_PATH || "./token.json";
 const CREDENTIALS_PATH = process.env.OAUTH_CLIENT_SECRET_PATH || "./credentials.json";
 

@@ -5,6 +5,15 @@ const fs = require("fs");
 const path = require("path");
 
 const { uploadFileToDrive } = require("./drive"); // 👈 สำคัญ
+const { extractExpenseFromImage } = require("./image-reader");
+const {
+  appendExpenseReportRow,
+  ensureMonthlyExpenseSheet,
+  isSheetsApiDisabledError,
+  listMonthlyExpenseImages,
+  downloadDriveFile,
+  appendExpenseTotalRow,
+} = require("./sheets");
 
 const config = {
   channelSecret: process.env.CHANNEL_SECRET,
@@ -12,6 +21,14 @@ const config = {
 };
 
 const app = express();
+
+let expenseHelpers = {};
+try {
+  // optional helper module from expense-parsing branch
+  expenseHelpers = require("./expense");
+} catch (_) {
+  expenseHelpers = {};
+}
 
 function pad2(n) { return String(n).padStart(2, "0"); }
 
@@ -31,6 +48,24 @@ function extFromContentType(contentType = "") {
   if (contentType.includes("png")) return ".png";
   return ".jpg";
 }
+
+function mimeTypeFromExtension(ext = "") {
+  const normalized = ext.toLowerCase();
+  if (normalized === ".png") return "image/png";
+  if (normalized === ".heic") return "image/heic";
+  if (normalized === ".heif") return "image/heif";
+  return "image/jpeg";
+}
+
+function expenseDateOrReceivedAt(parsedExpense, fallbackDate) {
+  const candidate = parsedExpense?.data?.date;
+  if (!candidate) return fallbackDate;
+
+  const parsed = new Date(candidate);
+  if (Number.isNaN(parsed.getTime())) return fallbackDate;
+  return parsed;
+}
+
 
 async function convertImageToJpg(sourcePath) {
   let sharp;
@@ -61,6 +96,111 @@ async function convertImageToJpg(sourcePath) {
   return jpgPath;
 }
 
+function parseExpenseReportCommand(text = "") {
+  const normalized = text.trim().toLowerCase();
+  const baseCommands = [
+    "create expense report",
+    "make expense report",
+    "create google sheet",
+  ];
+
+  for (const base of baseCommands) {
+    if (normalized === base) {
+      return { matched: true, targetDate: new Date(), targetMonthText: null };
+    }
+
+    const m = normalized.match(new RegExp(`^${base}\\s+(\\d{4})_(\\d{2})$`));
+    if (m) {
+      const year = Number(m[1]);
+      const month = Number(m[2]);
+      if (month >= 1 && month <= 12) {
+        return {
+          matched: true,
+          targetDate: new Date(year, month - 1, 1),
+          targetMonthText: `${m[1]}_${m[2]}`,
+        };
+      }
+    }
+  }
+
+  return { matched: false, targetDate: null, targetMonthText: null };
+}
+
+
+function buildSheetsSetupMessage(err) {
+  const base = "Google Sheets API is not enabled yet for this project.";
+  const url = err?.enableUrl;
+  if (url) return `${base} Enable it here, wait a few minutes, then try again: ${url}`;
+  return `${base} Please enable Sheets API in Google Cloud Console, wait a few minutes, then try again.`;
+}
+
+
+function mimeTypeFromExtension(ext = "") {
+  if (ext === ".png") return "image/png";
+  if (ext === ".heic") return "image/heic";
+  if (ext === ".heif") return "image/heif";
+  return "image/jpeg";
+}
+
+
+function extFromMimeType(mimeType = "") {
+  if (mimeType.includes("png")) return ".png";
+  if (mimeType.includes("heic")) return ".heic";
+  if (mimeType.includes("heif")) return ".heif";
+  return ".jpg";
+}
+
+
+function isGeminiMissing(parsedExpense) {
+  return parsedExpense?.status === "skipped" && /GEMINI_API_KEY/i.test(parsedExpense?.reason || "");
+}
+
+
+function expenseDateOrReceivedAt(parsedExpense, receivedAt) {
+  const raw = parsedExpense?.data?.date;
+  if (typeof raw !== "string") return receivedAt;
+  const d = new Date(`${raw}T00:00:00`);
+  return Number.isNaN(d.getTime()) ? receivedAt : d;
+}
+
+async function safeExtractExpenseFromImage(savePath, mimeType) {
+  try {
+    const result = await extractExpenseFromImage(savePath, mimeType);
+    console.log("expense parse result:", result);
+    return result;
+  } catch (err) {
+    console.error("expense parse failed:", err?.message || err);
+    return {
+      status: "error",
+      reason: `Parse failed: ${err?.message || "unknown error"}`,
+      data: null,
+    };
+  }
+}
+
+
+async function appendExpenseDataNonBlocking({ savePath, mimeType, receivedAt, uploaded, sourceLabel, parsedExpense }) {
+  try {
+    if (!uploaded) return;
+
+    const parsed = parsedExpense || await safeExtractExpenseFromImage(savePath, mimeType);
+    if (isGeminiMissing(parsed)) {
+      console.warn(`skip row append (${sourceLabel}): GEMINI_API_KEY is missing`);
+      return;
+    }
+
+    const report = await appendExpenseReportRow(receivedAt, uploaded, parsed);
+    console.log("expense row payload:", parsed?.data);
+    console.log(`expense report updated (${sourceLabel}):`, report?.spreadsheetId);
+  } catch (err) {
+    if (isSheetsApiDisabledError(err)) {
+      console.warn(`Sheets API disabled. Skip expense report row (${sourceLabel}):`, err?.originalMessage || err?.message);
+      return;
+    }
+    console.error(`expense post-upload processing failed (${sourceLabel}):`, err?.message || err);
+  }
+}
+
 app.post("/webhook", line.middleware(config), async (req, res) => {
   try {
     const events = req.body.events || [];
@@ -71,6 +211,63 @@ app.post("/webhook", line.middleware(config), async (req, res) => {
 
       const msg = event.message;
       const receivedAt = new Date(); // ใช้เวลาที่บอทได้รับ
+
+      // ---------- TEXT (create monthly expense sheet) ----------
+      const reportCommand = msg.type === "text" ? parseExpenseReportCommand(msg.text || "") : { matched: false };
+      if (reportCommand.matched) {
+        try {
+          const targetDate = reportCommand.targetDate || receivedAt;
+          const targetMonth = reportCommand.targetMonthText || `${targetDate.getFullYear()}_${pad2(targetDate.getMonth() + 1)}`;
+
+          const report = await ensureMonthlyExpenseSheet(targetDate);
+          console.log("manual report command received for", targetMonth);
+
+          const files = await listMonthlyExpenseImages(targetDate);
+          console.log(`found ${files.length} expense images in Drive folder ${targetMonth}`);
+
+          let processed = 0;
+          let skippedMissingGemini = 0;
+          for (const file of files) {
+            const ext = extFromMimeType(file.mimeType || "");
+            const savePath = path.join("downloads", `drive_${file.id}${ext}`);
+            fs.mkdirSync("downloads", { recursive: true });
+
+            await downloadDriveFile(file.id, savePath);
+            const parsedExpense = await safeExtractExpenseFromImage(savePath, file.mimeType || mimeTypeFromExtension(ext));
+
+            if (isGeminiMissing(parsedExpense)) {
+              skippedMissingGemini += 1;
+              console.warn("skip row append due to missing GEMINI_API_KEY for", file.name);
+              continue;
+            }
+
+            await appendExpenseReportRow(targetDate, { name: file.name, webViewLink: file.webViewLink }, parsedExpense);
+            console.log("expense row payload:", parsedExpense?.data, "from", file.name);
+            processed += 1;
+          }
+
+          if (processed > 0) {
+            await appendExpenseTotalRow(targetDate);
+            console.log("expense total row appended with formula");
+          }
+
+          await client.replyMessage(event.replyToken, {
+            type: "text",
+            text: `Done. Expense report sheet is ready for ${targetMonth} (sheet id: ${report.spreadsheetId}). Processed ${processed} image(s). Added TOTAL row with SUM formula.${skippedMissingGemini ? ` Skipped ${skippedMissingGemini} image(s): missing GEMINI_API_KEY.` : ""}`,
+          });
+        } catch (err) {
+          if (isSheetsApiDisabledError(err)) {
+            await client.replyMessage(event.replyToken, {
+              type: "text",
+              text: buildSheetsSetupMessage(err),
+            });
+            console.warn("Sheets API disabled:", err?.originalMessage || err?.message);
+          } else {
+            throw err;
+          }
+        }
+        continue;
+      }
 
       // ---------- FILE (PDF) ----------
       if (msg.type === "file") {
@@ -92,21 +289,61 @@ app.post("/webhook", line.middleware(config), async (req, res) => {
 
         let uploadPath = savePath;
         let uploadName = originalName;
+        let parsedExpense = null;
+        let uploadedAt = receivedAt;
 
         if (isImageFile) {
           uploadPath = await convertImageToJpg(savePath);
           uploadName = path.extname(uploadPath).toLowerCase() === ".jpg"
             ? `${path.parse(originalName).name}.jpg`
             : originalName;
+            if (typeof expenseHelpers.safeExtractExpenseFromImage === "function") {
+            parsedExpense = await expenseHelpers.safeExtractExpenseFromImage(
+              uploadPath,
+              mimeTypeFromExtension(path.extname(uploadPath))
+            );
+            uploadedAt = expenseDateOrReceivedAt(parsedExpense, receivedAt);
+          }
         }
 
         const uploaded = await uploadFileToDrive(
           uploadPath,
           uploadName,
-          receivedAt,
-          isImageFile ? { category: "expense" } : {}
+          uploadedAt,
+          isImageFile
+            ? { category: "expense", expenseDate: parsedExpense?.data?.date }
+            : {}
         );
         console.log("uploaded:", uploaded?.webViewLink);
+
+        if (isImageFile && typeof expenseHelpers.appendExpenseDataNonBlocking === "function") {
+          expenseHelpers.appendExpenseDataNonBlocking({
+            savePath: uploadPath,
+            mimeType: mimeTypeFromExtension(path.extname(uploadPath)),
+            receivedAt: uploadedAt,
+            uploaded,
+            sourceLabel: "file-message",
+            parsedExpense,
+          });
+          console.log("uploaded:", uploaded?.webViewLink);
+
+          await appendExpenseDataNonBlocking({
+            savePath,
+            mimeType: mimeTypeFromExtension(ext),
+            receivedAt: expenseDate,
+            uploaded,
+            sourceLabel: "file-message",
+            parsedExpense,
+          });
+        } else {
+          const uploaded = await uploadFileToDrive(
+            savePath,
+            originalName,
+            receivedAt,
+            {}
+          );
+          console.log("uploaded:", uploaded?.webViewLink);
+        }
 
         continue;
       }
@@ -137,9 +374,26 @@ app.post("/webhook", line.middleware(config), async (req, res) => {
           ? `${path.parse(fileName).name}.jpg`
           : fileName;
 
-        // ส่ง flag ว่าเป็น expense
-        const uploaded = await uploadFileToDrive(jpgPath, jpgName, receivedAt, { category: "expense" });
+        const parsedExpense = await safeExtractExpenseFromImage(savePath, mimeTypeFromExtension(ext));
+        const expenseDate = expenseDateOrReceivedAt(parsedExpense, receivedAt);
+
+        // ส่ง flag ว่าเป็น expense (ตัดสินใจโฟลเดอร์ด้วยวันที่จาก OCR)
+        const uploaded = await uploadFileToDrive(jpgPath, jpgName, expenseDate, {
+          category: "expense",
+          expenseDate: parsedExpense?.data?.date,
+        });
         console.log("uploaded image:", uploaded?.webViewLink);
+
+        if (uploaded) {
+          await appendExpenseDataNonBlocking({
+            savePath,
+            mimeType: mimeTypeFromExtension(ext),
+            receivedAt: expenseDate,
+            uploaded,
+            sourceLabel: "image-message",
+            parsedExpense,
+          });
+        }
 
         continue;
       }
